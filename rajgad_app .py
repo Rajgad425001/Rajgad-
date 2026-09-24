@@ -186,22 +186,39 @@ elif menu == "🏢 फ्लॅट व सभासद नोंदणी (Membe
                     st.rerun()
 
 # ================= 3. मेंटेनन्स जमा =================
+# ================= 3. मेंटेनन्स जमा =================
 elif menu == "💵 मेंटेनन्स जमा (Receipts)":
     st.subheader("💵 मेंटेनन्स पावती नोंदवणे")
     df_flats = pd.read_sql_query("SELECT * FROM flats", conn)
     
     if df_flats.empty:
-        st.warning("कृपया आधी फ्लॅट्स जोडा.")
+        st.warning("कृपया आधी 'फ्लॅट व सभासद नोंदणी' विभागात जाऊन फ्लॅट्स जोडा.")
     else:
-        with st.form("maint_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            sel_flat = col1.selectbox("फ्लॅट नंबर निवडा:", df_flats["flat_no"].tolist())
-            flat_info = df_flats[df_flats["flat_no"] == sel_flat].iloc[0]
-            col2.text_input("सभासदाचे नाव:", value=flat_info["owner_name"], disabled=True)
-            
+        # १. वेगवान Fetching साठी फ्लॅट्सचा डेटा डिक्शनरीमध्ये साठवणे
+        flats_dict = {
+            row["flat_no"]: {
+                "owner": row["owner_name"],
+                "maint": float(row["monthly_maint"])
+            }
+            for _, row in df_flats.iterrows()
+        }
+        
+        flat_list = list(flats_dict.keys())
+
+        # २. फ्लॅट निवडण्याचा पर्याय फॉर्मच्या बाहेर ठेवल्याने नाव लगेच रिफ्लेक्ट होते
+        col_f1, col_f2 = st.columns(2)
+        sel_flat = col_f1.selectbox("फ्लॅट नंबर निवडा:", flat_list)
+        
+        # निवडलेल्या फ्लॅटचा मालक आणि मेंटेनन्स दर लगेच घेणे
+        curr_owner = flats_dict[sel_flat]["owner"]
+        curr_maint = flats_dict[sel_flat]["maint"]
+        
+        col_f2.text_input("सभासदाचे नाव:", value=curr_owner, disabled=True)
+
+        # ३. पावतीचा उर्वरित फॉर्म
+        with st.form("maint_entry_form", clear_on_submit=True):
             col3, col4 = st.columns(2)
             curr_y = datetime.now().year
-            # चालू वर्ष व मागील/पुढील वर्षांचे महिने
             year_choices = [curr_y, curr_y - 1, curr_y + 1]
             sel_year = col3.selectbox("वर्ष:", year_choices, index=0)
             sel_month = col4.selectbox("महिना:", MONTHS_LIST, index=datetime.now().month - 1)
@@ -209,7 +226,7 @@ elif menu == "💵 मेंटेनन्स जमा (Receipts)":
             month_year_str = f"{sel_month} {sel_year}"
             
             col5, col6 = st.columns(2)
-            rec_amt = col5.number_input("रक्कम (₹):", value=float(flat_info["monthly_maint"]), step=100.0)
+            rec_amt = col5.number_input("रक्कम (₹):", value=curr_maint, step=100.0)
             pay_mode = col6.selectbox("पैसे कसे मिळाले?:", ["ऑनलाइन (GPay / PhonePe / NEFT)", "रोख (Cash)", "धनादेश (Cheque)"])
             
             rec_date = st.date_input("पावती तारीख:")
@@ -223,7 +240,7 @@ elif menu == "💵 मेंटेनन्स जमा (Receipts)":
                     VALUES (?, ?, ?, ?, ?, ?)
                 """, (sel_flat, month_year_str, rec_amt, pay_mode, str(rec_date), remark))
                 conn.commit()
-                st.success(f"फ्लॅट क्र. {sel_flat} साठी {month_year_str} चे मेंटेनन्स नोंदवले गेले!")
+                st.success(f"फ्लॅट क्र. {sel_flat} ({curr_owner}) साठी {month_year_str} चे मेंटेनन्स नोंदवले गेले!")
                 st.rerun()
 
         st.markdown("---")
