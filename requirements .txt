@@ -1,6 +1,8 @@
 streamlit
 pandas
 openpyxl
-requests
+sqlalchemy
+pg8000
+
 
 
