@@ -1,8 +1,8 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime
 import io
+from sqlalchemy import create_engine, text
 
 st.set_page_config(
     page_title="राजगड सोसायटी व्यवस्थापन प्रणाली",
@@ -34,51 +34,61 @@ MONTHS_LIST = [
     "जुलै", "ऑगस्ट", "सप्टेंबर", "ऑक्टोबर", "नोव्हेंबर", "डिसेंबर"
 ]
 
-def get_connection():
-    return sqlite3.connect("rajgad_society.db", check_same_thread=False)
+# --- Cloud Database Connection (Neon PostgreSQL) ---
+def get_db_url():
+    if "DATABASE_URL" in st.secrets:
+        return st.secrets["DATABASE_URL"]
+    # फॉलबॅक लोकल किंवा डीफॉल्ट
+    return "sqlite:///rajgad_society.db"
+
+@st.cache_resource
+def get_engine():
+    db_url = get_db_url()
+    # postgres:// चे रूपांतर postgresql:// मध्ये करणे (सुसंगततेसाठी)
+    if db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    return create_engine(db_url, pool_pre_ping=True)
+
+engine = get_engine()
 
 def init_db():
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS flats (
-            flat_no TEXT PRIMARY KEY,
-            owner_name TEXT NOT NULL,
-            contact TEXT,
-            monthly_maint REAL NOT NULL DEFAULT 1000.0
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS maintenance_received (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            flat_no TEXT NOT NULL,
-            month_year TEXT NOT NULL,
-            amount REAL NOT NULL,
-            payment_mode TEXT NOT NULL,
-            payment_date TEXT NOT NULL,
-            remark TEXT,
-            FOREIGN KEY(flat_no) REFERENCES flats(flat_no)
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            category TEXT NOT NULL,
-            amount REAL NOT NULL,
-            expense_date TEXT NOT NULL,
-            paid_to TEXT,
-            payment_mode TEXT NOT NULL,
-            remark TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS flats (
+                flat_no VARCHAR(50) PRIMARY KEY,
+                owner_name VARCHAR(255) NOT NULL,
+                contact VARCHAR(50),
+                monthly_maint DOUBLE PRECISION NOT NULL DEFAULT 1000.0
+            );
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS maintenance_received (
+                id SERIAL PRIMARY KEY,
+                flat_no VARCHAR(50) NOT NULL,
+                month_year VARCHAR(50) NOT NULL,
+                amount DOUBLE PRECISION NOT NULL,
+                payment_mode VARCHAR(100) NOT NULL,
+                payment_date VARCHAR(50) NOT NULL,
+                remark TEXT
+            );
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS expenses (
+                id SERIAL PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                amount DOUBLE PRECISION NOT NULL,
+                expense_date VARCHAR(50) NOT NULL,
+                paid_to VARCHAR(255),
+                payment_mode VARCHAR(100) NOT NULL,
+                remark TEXT
+            );
+        """))
 
 init_db()
 
 st.markdown('<div class="main-title">🏰 राजगड गृहनिर्माण संस्था (Housing Society)</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">मेंटेनन्स, खर्च आणि थकबाकी व्यवस्थापन प्रणाली</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">क्लाऊड डेटाबेस सुरक्षित मेंटेनन्स, खर्च आणि थकबाकी व्यवस्थापन प्रणाली</div>', unsafe_allow_html=True)
 
 menu = st.sidebar.radio(
     "📌 नेव्हिगेशन मेनू",
@@ -92,18 +102,17 @@ menu = st.sidebar.radio(
     ]
 )
 
-conn = get_connection()
-
 # ================= 1. डॅशबोर्ड =================
 if menu == "📊 डॅशबोर्ड (हिशोब सारांश)":
     st.subheader("📊 संस्थेचा आर्थिक सारांश")
     
-    df_maint = pd.read_sql_query("SELECT * FROM maintenance_received", conn)
-    df_exp = pd.read_sql_query("SELECT * FROM expenses", conn)
-    df_flats = pd.read_sql_query("SELECT * FROM flats", conn)
+    with engine.connect() as conn:
+        df_maint = pd.read_sql_query(text("SELECT * FROM maintenance_received"), conn)
+        df_exp = pd.read_sql_query(text("SELECT * FROM expenses"), conn)
+        df_flats = pd.read_sql_query(text("SELECT * FROM flats"), conn)
 
-    total_maint = df_maint["amount"].sum() if not df_maint.empty else 0.0
-    total_exp = df_exp["amount"].sum() if not df_exp.empty else 0.0
+    total_maint = float(df_maint["amount"].sum()) if not df_maint.empty else 0.0
+    total_exp = float(df_exp["amount"].sum()) if not df_exp.empty else 0.0
     balance = total_maint - total_exp
 
     col1, col2, col3, col4 = st.columns(4)
@@ -119,7 +128,7 @@ if menu == "📊 डॅशबोर्ड (हिशोब सारांश)":
         if not df_maint.empty:
             st.dataframe(df_maint.sort_values(by="id", ascending=False).head(5)[["flat_no", "month_year", "amount", "payment_mode", "payment_date"]], use_container_width=True)
         else:
-            st.info("मेंटेनन्स नोंद उपलब्ध नाही.")
+            st.info("कोणतीही नोंद उपलब्ध नाही.")
     with c2:
         st.write("### 📤 नुकताच झालेला खर्च")
         if not df_exp.empty:
@@ -144,22 +153,25 @@ elif menu == "🏢 फ्लॅट व सभासद नोंदणी (Membe
             if btn_add:
                 if f_no and o_name:
                     try:
-                        c = conn.cursor()
-                        c.execute("INSERT INTO flats (flat_no, owner_name, contact, monthly_maint) VALUES (?, ?, ?, ?)",
-                                  (f_no, o_name, contact, m_maint))
-                        conn.commit()
-                        st.success(f"फ्लॅट क्र. {f_no} जोडला गेला!")
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text("INSERT INTO flats (flat_no, owner_name, contact, monthly_maint) VALUES (:f, :o, :c, :m)"),
+                                {"f": f_no, "o": o_name, "c": contact, "m": m_maint}
+                            )
+                        st.success(f"फ्लॅट क्र. {f_no} यशस्वीरीत्या जोडला गेला!")
                         st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error(f"फ्लॅट क्र. {f_no} आधीच नोंदणीकृत आहे!")
+                    except Exception as e:
+                        st.error(f"फ्लॅट आधीच नोंदणीकृत असू शकतो किंवा एरर: {e}")
                 else:
-                    st.error("सर्व माहिती अचूक भरा.")
+                    st.error("कृपया फ्लॅट नंबर आणि नाव भरा.")
                     
     with tab2:
-        df_flats = pd.read_sql_query("SELECT * FROM flats", conn)
+        with engine.connect() as conn:
+            df_flats = pd.read_sql_query(text("SELECT * FROM flats"), conn)
+            
         if not df_flats.empty:
             st.dataframe(df_flats, use_container_width=True)
-            flat_to_edit = st.selectbox("फ्लॅट निवडा:", df_flats["flat_no"].tolist())
+            flat_to_edit = st.selectbox("बदल करण्यासाठी फ्लॅट निवडा:", df_flats["flat_no"].tolist())
             flat_curr = df_flats[df_flats["flat_no"] == flat_to_edit].iloc[0]
             
             with st.form("edit_flat_form"):
@@ -172,29 +184,28 @@ elif menu == "🏢 फ्लॅट व सभासद नोंदणी (Membe
                 btn_del = col_u2.form_submit_button("हा फ्लॅट डिलीट करा")
                 
                 if btn_update:
-                    c = conn.cursor()
-                    c.execute("UPDATE flats SET owner_name=?, contact=?, monthly_maint=? WHERE flat_no=?",
-                              (new_owner, new_contact, new_maint, flat_to_edit))
-                    conn.commit()
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text("UPDATE flats SET owner_name=:o, contact=:c, monthly_maint=:m WHERE flat_no=:f"),
+                            {"o": new_owner, "c": new_contact, "m": new_maint, "f": flat_to_edit}
+                        )
                     st.success("माहिती अपडेट झाली!")
                     st.rerun()
                 if btn_del:
-                    c = conn.cursor()
-                    c.execute("DELETE FROM flats WHERE flat_no=?", (flat_to_edit,))
-                    conn.commit()
+                    with engine.begin() as conn:
+                        conn.execute(text("DELETE FROM flats WHERE flat_no=:f"), {"f": flat_to_edit})
                     st.warning("फ्लॅट डिलीट केला गेला!")
                     st.rerun()
 
 # ================= 3. मेंटेनन्स जमा =================
-# ================= 3. मेंटेनन्स जमा =================
 elif menu == "💵 मेंटेनन्स जमा (Receipts)":
     st.subheader("💵 मेंटेनन्स पावती नोंदवणे")
-    df_flats = pd.read_sql_query("SELECT * FROM flats", conn)
+    with engine.connect() as conn:
+        df_flats = pd.read_sql_query(text("SELECT * FROM flats"), conn)
     
     if df_flats.empty:
-        st.warning("कृपया आधी 'फ्लॅट व सभासद नोंदणी' विभागात जाऊन फ्लॅट्स जोडा.")
+        st.warning("कृपया आधी फ्लॅट्स जोडा.")
     else:
-        # १. वेगवान Fetching साठी फ्लॅट्सचा डेटा डिक्शनरीमध्ये साठवणे
         flats_dict = {
             row["flat_no"]: {
                 "owner": row["owner_name"],
@@ -205,22 +216,17 @@ elif menu == "💵 मेंटेनन्स जमा (Receipts)":
         
         flat_list = list(flats_dict.keys())
 
-        # २. फ्लॅट निवडण्याचा पर्याय फॉर्मच्या बाहेर ठेवल्याने नाव लगेच रिफ्लेक्ट होते
         col_f1, col_f2 = st.columns(2)
         sel_flat = col_f1.selectbox("फ्लॅट नंबर निवडा:", flat_list)
-        
-        # निवडलेल्या फ्लॅटचा मालक आणि मेंटेनन्स दर लगेच घेणे
         curr_owner = flats_dict[sel_flat]["owner"]
         curr_maint = flats_dict[sel_flat]["maint"]
         
         col_f2.text_input("सभासदाचे नाव:", value=curr_owner, disabled=True)
 
-        # ३. पावतीचा उर्वरित फॉर्म
         with st.form("maint_entry_form", clear_on_submit=True):
             col3, col4 = st.columns(2)
             curr_y = datetime.now().year
-            year_choices = [curr_y, curr_y - 1, curr_y + 1]
-            sel_year = col3.selectbox("वर्ष:", year_choices, index=0)
+            sel_year = col3.selectbox("वर्ष:", [curr_y, curr_y - 1, curr_y + 1], index=0)
             sel_month = col4.selectbox("महिना:", MONTHS_LIST, index=datetime.now().month - 1)
             
             month_year_str = f"{sel_month} {sel_year}"
@@ -229,37 +235,40 @@ elif menu == "💵 मेंटेनन्स जमा (Receipts)":
             rec_amt = col5.number_input("रक्कम (₹):", value=curr_maint, step=100.0)
             pay_mode = col6.selectbox("पैसे कसे मिळाले?:", ["ऑनलाइन (GPay / PhonePe / NEFT)", "रोख (Cash)", "धनादेश (Cheque)"])
             
-            rec_date = st.date_input("पावती तारीख:")
-            remark = st.text_input("रिमार्क (उदा. UTR Number / Cash Received):")
+            rec_date = st.date_input("पावती तारीख:", value=datetime.today().date())
+            remark = st.text_input("रिमार्क (उदा. UTR Number / Cash):")
             
             btn_save_maint = st.form_submit_button("पावती सेव्ह करा")
             if btn_save_maint:
-                c = conn.cursor()
-                c.execute("""
-                    INSERT INTO maintenance_received (flat_no, month_year, amount, payment_mode, payment_date, remark)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (sel_flat, month_year_str, rec_amt, pay_mode, str(rec_date), remark))
-                conn.commit()
-                st.success(f"फ्लॅट क्र. {sel_flat} ({curr_owner}) साठी {month_year_str} चे मेंटेनन्स नोंदवले गेले!")
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("""
+                            INSERT INTO maintenance_received (flat_no, month_year, amount, payment_mode, payment_date, remark)
+                            VALUES (:f, :m, :a, :pm, :pd, :r)
+                        """),
+                        {"f": sel_flat, "m": month_year_str, "a": rec_amt, "pm": pay_mode, "pd": str(rec_date), "r": remark}
+                    )
+                st.success(f"फ्लॅट क्र. {sel_flat} साठी {month_year_str} चे मेंटेनन्स नोंदवले गेले!")
                 st.rerun()
 
         st.markdown("---")
-        df_maint_all = pd.read_sql_query("""
-            SELECT m.id, m.flat_no as 'फ्लॅट क्र.', f.owner_name as 'नाव', 
-                   m.month_year as 'महिना/वर्ष', m.amount as 'रक्कम (₹)', 
-                   m.payment_mode as 'पद्धत', m.payment_date as 'तारीख', m.remark as 'रिमार्क'
-            FROM maintenance_received m
-            LEFT JOIN flats f ON m.flat_no = f.flat_no
-            ORDER BY m.id DESC
-        """, conn)
+        with engine.connect() as conn:
+            df_maint_all = pd.read_sql_query(text("""
+                SELECT m.id, m.flat_no as "फ्लॅट क्र.", f.owner_name as "नाव", 
+                       m.month_year as "महिना/वर्ष", m.amount as "रक्कम (₹)", 
+                       m.payment_mode as "पद्धत", m.payment_date as "तारीख", m.remark as "रिमार्क"
+                FROM maintenance_received m
+                LEFT JOIN flats f ON m.flat_no = f.flat_no
+                ORDER BY m.id DESC
+            """), conn)
+            
         if not df_maint_all.empty:
             st.dataframe(df_maint_all, use_container_width=True)
             with st.expander("🗑️ चुकीची पावती हटवा"):
                 del_rec_id = st.selectbox("पावती ID निवडा:", df_maint_all["id"].tolist())
                 if st.button("पावती डिलीट करा", type="primary"):
-                    c = conn.cursor()
-                    c.execute("DELETE FROM maintenance_received WHERE id=?", (del_rec_id,))
-                    conn.commit()
+                    with engine.begin() as conn:
+                        conn.execute(text("DELETE FROM maintenance_received WHERE id=:id"), {"id": int(del_rec_id)})
                     st.success("पावती काढली!")
                     st.rerun()
 
@@ -277,7 +286,7 @@ elif menu == "💸 सोसायटी खर्च नोंद (Expenses)":
         
         col3, col4 = st.columns(2)
         exp_amt = col3.number_input("रक्कम (₹):", min_value=0.0, step=100.0)
-        exp_date = col4.date_input("खर्च तारीख:")
+        exp_date = col4.date_input("खर्च तारीख:", value=datetime.today().date())
         
         col5, col6 = st.columns(2)
         paid_to = col5.text_input("पैसे कोणास दिले?:")
@@ -287,49 +296,54 @@ elif menu == "💸 सोसायटी खर्च नोंद (Expenses)":
         btn_save_exp = st.form_submit_button("खर्च सेव्ह करा")
         if btn_save_exp:
             if exp_title and exp_amt > 0:
-                c = conn.cursor()
-                c.execute("""
-                    INSERT INTO expenses (title, category, amount, expense_date, paid_to, payment_mode, remark)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (exp_title, exp_cat, exp_amt, str(exp_date), paid_to, exp_mode, exp_remark))
-                conn.commit()
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("""
+                            INSERT INTO expenses (title, category, amount, expense_date, paid_to, payment_mode, remark)
+                            VALUES (:t, :c, :a, :ed, :pt, :pm, :r)
+                        """),
+                        {"t": exp_title, "c": exp_cat, "a": exp_amt, "ed": str(exp_date), "pt": paid_to, "pm": exp_mode, "r": exp_remark}
+                    )
                 st.success("खर्च नोंद सेव्ह झाली!")
                 st.rerun()
 
     st.markdown("---")
-    df_exp_all = pd.read_sql_query("SELECT id, title as 'तपशील', category as 'प्रवर्ग', amount as 'रक्कम (₹)', expense_date as 'तारीख', paid_to as 'कोणास दिले', payment_mode as 'पद्धत' FROM expenses ORDER BY id DESC", conn)
+    with engine.connect() as conn:
+        df_exp_all = pd.read_sql_query(text("""
+            SELECT id, title as "तपशील", category as "प्रवर्ग", amount as "रक्कम (₹)", 
+                   expense_date as "तारीख", paid_to as "कोणास दिले", payment_mode as "पद्धत" 
+            FROM expenses ORDER BY id DESC
+        """), conn)
     if not df_exp_all.empty:
         st.dataframe(df_exp_all, use_container_width=True)
 
 # ================= 5. फ्लॅटनिहाय सविस्तर थकबाकी अहवाल =================
 elif menu == "⚠️ फ्लॅटनिहाय सविस्तर थकबाकी अहवाल (Pending Dues)":
     st.subheader("⚠️ फ्लॅटनिहाय थकबाकी व बाकी महिन्यांचा अहवाल")
-    df_flats = pd.read_sql_query("SELECT * FROM flats", conn)
+    with engine.connect() as conn:
+        df_flats = pd.read_sql_query(text("SELECT * FROM flats"), conn)
 
     if df_flats.empty:
-        st.warning("कृपया आधी फ्लॅट्स ॲड करा.")
+        st.warning("कृपया आधी फ्लॅट्स जोडा.")
     else:
         curr_y = datetime.now().year
-        
-        # हिशोब तपासण्यासाठी वर्ष व महिना फिल्टर
         col_s1, col_s2, col_s3 = st.columns(3)
-        selected_year = col_s1.selectbox("कोणत्या वर्षाचा हिशोब पाहायचा आहे?", [curr_y, 2026, 2027], index=0)
+        selected_year = col_s1.selectbox("वर्ष निवडा:", [curr_y, 2026, 2027], index=0)
         
-        # जर २०२६ निवडले तर सुरुवात ऑगस्टपासून, २०२७ ला जानेवारीपासून
         default_start_idx = 7 if selected_year == 2026 else 0
         from_month = col_s2.selectbox("सुरुवातीचा महिना:", MONTHS_LIST, index=default_start_idx)
         
-        # चालू महिना डीफॉल्ट ठेवणे
         curr_m_idx = datetime.now().month - 1
         upto_month = col_s3.selectbox("शेवटचा महिना:", MONTHS_LIST, index=curr_m_idx)
 
         from_idx = MONTHS_LIST.index(from_month)
         upto_idx = MONTHS_LIST.index(upto_month) + 1
         
-        # तपासण्याचे महिने
         months_to_check = [f"{m} {selected_year}" for m in MONTHS_LIST[from_idx:upto_idx]]
 
-        df_paid = pd.read_sql_query("SELECT flat_no, month_year, amount FROM maintenance_received", conn)
+        with engine.connect() as conn:
+            df_paid = pd.read_sql_query(text("SELECT flat_no, month_year, amount FROM maintenance_received"), conn)
+            
         dues_report = []
         total_society_dues = 0.0
 
@@ -381,7 +395,7 @@ elif menu == "⚠️ फ्लॅटनिहाय सविस्तर थक
             display_df.to_excel(writer, index=False, sheet_name='Pending_Dues')
         st.download_button(
             label="📥 थकबाकीदार अहवाल Excel डाउनलोड करा (.xlsx)",
-            data=output_dues.getvalue(),
+            data=output_dues.getvalue>,
             file_name=f"Rajgad_Dues_{selected_year}_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
@@ -395,47 +409,46 @@ elif menu == "📑 अहवाल व डाऊनलोड (Reports / Excel)":
         "३. एकत्रित ताळेबंद / नफा-तोटा (Profit & Loss Summary)"
     ])
     
-    if rep_choice == "१. संपूर्ण मेंटेनन्स जमा अहवाल (Maintenance Received)":
-        df = pd.read_sql_query("""
-            SELECT m.id, m.flat_no as 'फ्लॅट क्र.', f.owner_name as 'सभासदाचे नाव', 
-                   m.month_year as 'महिना/वर्ष', m.amount as 'जमा रक्कम (₹)', 
-                   m.payment_mode as 'पद्धत', m.payment_date as 'पावती तारीख', m.remark as 'रिमार्क'
-            FROM maintenance_received m
-            LEFT JOIN flats f ON m.flat_no = f.flat_no
-            ORDER BY m.payment_date DESC
-        """, conn)
-        st.dataframe(df, use_container_width=True)
-        out = io.BytesIO()
-        with pd.ExcelWriter(out, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Maintenance')
-        st.download_button("📥 मेंटेनन्स अहवाल Excel डाउनलोड करा", out.getvalue(), "Maintenance_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with engine.connect() as conn:
+        if rep_choice == "१. संपूर्ण मेंटेनन्स जमा अहवाल (Maintenance Received)":
+            df = pd.read_sql_query(text("""
+                SELECT m.id, m.flat_no as "फ्लॅट क्र.", f.owner_name as "सभासदाचे नाव", 
+                       m.month_year as "महिना/वर्ष", m.amount as "जमा रक्कम (₹)", 
+                       m.payment_mode as "पद्धत", m.payment_date as "पावती तारीख", m.remark as "रिमार्क"
+                FROM maintenance_received m
+                LEFT JOIN flats f ON m.flat_no = f.flat_no
+                ORDER BY m.payment_date DESC
+            """), conn)
+            st.dataframe(df, use_container_width=True)
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Maintenance')
+            st.download_button("📥 मेंटेनन्स अहवाल Excel डाउनलोड करा", out.getvalue(), "Maintenance_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    elif rep_choice == "२. संपूर्ण खर्च अहवाल (Expenses Report)":
-        df = pd.read_sql_query("""
-            SELECT id, title as 'खर्चाचे नाव', category as 'प्रवर्ग', amount as 'रक्कम (₹)', 
-                   expense_date as 'तारीख', paid_to as 'कोणास दिले', payment_mode as 'पेमेंट पद्धत', remark as 'रिमार्क'
-            FROM expenses ORDER BY expense_date DESC
-        """, conn)
-        st.dataframe(df, use_container_width=True)
-        out = io.BytesIO()
-        with pd.ExcelWriter(out, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Expenses')
-        st.download_button("📥 खर्च अहवाल Excel डाउनलोड करा", out.getvalue(), "Expenses_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        
-    elif rep_choice == "३. एकत्रित ताळेबंद / नफा-तोटा (Profit & Loss Summary)":
-        df_m = pd.read_sql_query("SELECT SUM(amount) as total_maint FROM maintenance_received", conn)
-        df_e = pd.read_sql_query("SELECT SUM(amount) as total_exp FROM expenses", conn)
-        tm = df_m['total_maint'].iloc[0] or 0.0
-        te = df_e['total_exp'].iloc[0] or 0.0
-        bal = tm - te
-        df_summary = pd.DataFrame({
-            "तपशील": ["एकूण जमा मेंटेनन्स", "एकूण झालेला खर्च", "शिल्लक निधी (Net Balance)"],
-            "रक्कम (₹)": [tm, te, bal]
-        })
-        st.dataframe(df_summary, use_container_width=True)
-        out = io.BytesIO()
-        with pd.ExcelWriter(out, engine='openpyxl') as writer:
-            df_summary.to_excel(writer, index=False, sheet_name='Summary')
-        st.download_button("📥 ताळेबंद समरी Excel डाउनलोड करा", out.getvalue(), "Balance_Summary.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-conn.close()
+        elif rep_choice == "२. संपूर्ण खर्च अहवाल (Expenses Report)":
+            df = pd.read_sql_query(text("""
+                SELECT id, title as "खर्चाचे नाव", category as "प्रवर्ग", amount as "रक्कम (₹)", 
+                       expense_date as "तारीख", paid_to as "कोणास दिले", payment_mode as "पेमेंट पद्धत", remark as "रिमार्क"
+                FROM expenses ORDER BY expense_date DESC
+            """), conn)
+            st.dataframe(df, use_container_width=True)
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Expenses')
+            st.download_button("📥 खर्च अहवाल Excel डाउनलोड करा", out.getvalue(), "Expenses_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            
+        elif rep_choice == "३. एकत्रित ताळेबंद / नफा-तोटा (Profit & Loss Summary)":
+            df_m = pd.read_sql_query(text("SELECT SUM(amount) as total_maint FROM maintenance_received"), conn)
+            df_e = pd.read_sql_query(text("SELECT SUM(amount) as total_exp FROM expenses"), conn)
+            tm = float(df_m['total_maint'].iloc[0]) if pd.notnull(df_m['total_maint'].iloc[0]) else 0.0
+            te = float(df_e['total_exp'].iloc[0]) if pd.notnull(df_e['total_exp'].iloc[0]) else 0.0
+            bal = tm - te
+            df_summary = pd.DataFrame({
+                "तपशील": ["एकूण जमा मेंटेनन्स", "एकूण झालेला खर्च", "शिल्लक निधी (Net Balance)"],
+                "रक्कम (₹)": [tm, te, bal]
+            })
+            st.dataframe(df_summary, use_container_width=True)
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine='openpyxl') as writer:
+                df_summary.to_excel(writer, index=False, sheet_name='Summary')
+            st.download_button("📥 ताळेबंद समरी Excel डाउनलोड करा", out.getvalue(), "Balance_Summary.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
