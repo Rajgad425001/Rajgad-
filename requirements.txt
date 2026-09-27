@@ -2,4 +2,4 @@ openpyxl
 pandas
 sqlalchemy
 pg8000
-
+sslmode
