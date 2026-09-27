@@ -1,6 +1,8 @@
 streamlit
 pandas
 openpyxl
-psycopg2-binary
+psycopg
+psycopg-binary
 sqlalchemy
+
 
