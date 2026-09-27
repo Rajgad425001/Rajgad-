@@ -2,6 +2,106 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import io
+from sqlalchemy import create_engine, text
+
+st.set_page_config(
+    page_title="राजगड सोसायटी व्यवस्थापन प्रणाली",
+    page_icon="🏰",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.markdown("""
+<style>
+    .main-title {
+        font-size: 2.2rem;
+        font-weight: 700;
+        color: #8B0000;
+        text-align: center;
+        padding-bottom: 5px;
+    }
+    .sub-title {
+        font-size: 1.1rem;
+        color: #555;
+        text-align: center;
+        margin-bottom: 20px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+MONTHS_LIST = [
+    "जानेवारी", "फेब्रुवारी", "मार्च", "एप्रिल", "मे", "जून",
+    "जुलै", "ऑगस्ट", "सप्टेंबर", "ऑक्टोबर", "नोव्हेंबर", "डिसेंबर"
+]
+
+# --- pg8000 Pure-Python Connection (No Unicode or Driver Issues) ---
+def get_db_url():
+    if "DATABASE_URL" in st.secrets:
+        url = st.secrets["DATABASE_URL"]
+    else:
+        return "sqlite:///rajgad_society.db"
+
+    # postgresql:// किंवा postgres:// चे रूपांतर postgresql+pg8000:// मध्ये करणे
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+pg8000://", 1)
+    elif url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+pg8000://", 1)
+    
+    # pg8000 साठी channel_binding काढणे जर उपस्थित असेल
+    if "channel_binding=" in url:
+        url = url.split("&channel_binding=")[0]
+    return url
+
+@st.cache_resource
+def get_engine():
+    db_url = get_db_url()
+    return create_engine(
+        db_url,
+        pool_pre_ping=True,
+        client_encoding="utf8"
+    )
+
+engine = get_engine()
+
+def init_db():
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS flats (
+                flat_no VARCHAR(50) PRIMARY KEY,
+                owner_name VARCHAR(255) NOT NULL,
+                contact VARCHAR(50),
+                monthly_maint DOUBLE PRECISION NOT NULL DEFAULT 1000.0
+            );
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS maintenance_received (
+                id SERIAL PRIMARY KEY,
+                flat_no VARCHAR(50) NOT NULL,
+                month_year VARCHAR(50) NOT NULL,
+                amount DOUBLE PRECISION NOT NULL,
+                payment_mode VARCHAR(100) NOT NULL,
+                payment_date VARCHAR(50) NOT NULL,
+                remark TEXT
+            );
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS expenses (
+                id SERIAL PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                category VARCHAR(100) NOT NULL,
+                amount DOUBLE PRECISION NOT NULL,
+                expense_date VARCHAR(50) NOT NULL,
+                paid_to VARCHAR(255),
+                payment_mode VARCHAR(100) NOT NULL,
+                remark TEXT
+            );
+        """))
+
+init_db()
+import streamlit as st
+import pandas as pd
+from datetime import datetime
+import io
 import requests
 
 st.set_page_config(
