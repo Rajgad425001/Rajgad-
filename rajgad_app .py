@@ -395,7 +395,7 @@ elif menu == "⚠️ फ्लॅटनिहाय सविस्तर थक
             display_df.to_excel(writer, index=False, sheet_name='Pending_Dues')
         st.download_button(
             label="📥 थकबाकीदार अहवाल Excel डाउनलोड करा (.xlsx)",
-            data=output_dues.getvalue>,
+            data=output_dues.getvalue(),
             file_name=f"Rajgad_Dues_{selected_year}_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
