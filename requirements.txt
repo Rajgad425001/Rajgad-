@@ -1,5 +1,6 @@
-openpyxl
+streamlit
 pandas
-sqlalchemy
-pg8000
+openpyxl
+psycopg[binary]
+
 
