@@ -1,8 +1,9 @@
 streamlit
 pandas
 openpyxl
-sqlalchemy
-pg8000
+psycopg2-binary
+SQLAlchemy
+
 
 
 
